@@ -76,6 +76,7 @@ let firebaseReady = false;
 let firebaseAuth = null;
 let firebaseDb = null;
 let currentUser = null;
+let cloudSyncReady = false;
 let currentProject = null;
 let currentTool = "brush";
 let showGrid = true;
@@ -1941,12 +1942,17 @@ async function saveCurrentProject() {
     try {
       await saveProjectToCloud(currentProject);
       await persistProjects();
-      setStatus("Projekt zapisany w chmurze.");
-      saveBtn.textContent = "Zapisano";
+      cloudSyncReady = true;
+      updateAuthUI();
+      setStatus("Projekt zapisany w chmurze i lokalnej kopii.");
+      saveBtn.textContent = "Zapisano w chmurze";
     } catch (error) {
+      cloudSyncReady = false;
+      updateAuthUI();
       console.error("Cloud save error", error);
       const localSaved = await persistProjects();
-      setStatus(localSaved ? "Chmura zwróciła błąd, ale projekt zapisano lokalnie." : "Błąd zapisu w chmurze i lokalnie.");
+      const code = error?.code ? ` (${error.code})` : "";
+      setStatus(localSaved ? `Chmura zwróciła błąd${code}, ale projekt zapisano lokalnie.` : `Błąd zapisu w chmurze${code} i lokalnie.`);
       saveBtn.textContent = localSaved ? "Zapis lokalny" : "Błąd zapisu";
     }
 
@@ -1966,8 +1972,12 @@ async function saveCurrentProject() {
   }, 900);
 }
 
+function getActiveFirebaseUser() {
+  return currentUser || firebaseAuth?.currentUser || null;
+}
+
 function isCloudMode() {
-  return firebaseReady && firebaseDb && currentUser;
+  return Boolean(firebaseReady && firebaseDb && getActiveFirebaseUser());
 }
 
 function updateAuthUI(customMessage = "") {
@@ -1977,8 +1987,10 @@ function updateAuthUI(customMessage = "") {
     logoutBtn.classList.add("hidden");
     return;
   }
-  if (currentUser) {
-    authStatus.textContent = currentUser.displayName || currentUser.email || "Zalogowano";
+  const activeUser = getActiveFirebaseUser();
+  if (activeUser) {
+    const name = activeUser.displayName || activeUser.email || "konto Google";
+    authStatus.textContent = cloudSyncReady ? `Chmura aktywna: ${name}` : `Logowanie: ${name}`;
     loginBtn.classList.add("hidden");
     logoutBtn.classList.remove("hidden");
   } else {
@@ -2002,8 +2014,9 @@ function initFirebaseCloud() {
 
     firebaseAuth.onAuthStateChanged(async (user) => {
       currentUser = user;
+      cloudSyncReady = false;
       updateAuthUI();
-      if (user) await loadCloudProjectsIntoGallery();
+      if (user) await syncCloudProjectsIntoGallery({ uploadLocal: true });
       else {
         projects = await loadProjects();
         renderGallery();
@@ -2032,46 +2045,83 @@ async function signInWithGoogle() {
 
 async function signOutGoogle() {
   if (!firebaseAuth) return;
+  cloudSyncReady = false;
   await firebaseAuth.signOut();
 }
 
 async function saveProjectToCloud(project) {
-  if (!isCloudMode()) throw new Error("Brak zalogowanego użytkownika.");
-  const cleanProject = cloneProject(project);
-  cleanProject.ownerUid = currentUser.uid;
+  const activeUser = getActiveFirebaseUser();
+  if (!firebaseReady || !firebaseDb || !activeUser) throw new Error("Brak zalogowanego użytkownika.");
+  const cleanProject = normalizeProject(cloneProject(project));
+  cleanProject.ownerUid = activeUser.uid;
   cleanProject.cloudUpdatedAt = firebase.firestore.FieldValue.serverTimestamp();
-  await firebaseDb.collection("users").doc(currentUser.uid).collection("projects").doc(project.id).set(cleanProject, { merge: true });
+  await firebaseDb.collection("users").doc(activeUser.uid).collection("projects").doc(cleanProject.id).set(cleanProject, { merge: true });
 }
 
 async function deleteProjectFromCloud(projectId) {
+  const activeUser = getActiveFirebaseUser();
+  if (!firebaseReady || !firebaseDb || !activeUser) return;
+  await firebaseDb.collection("users").doc(activeUser.uid).collection("projects").doc(projectId).delete();
+}
+
+function getProjectSortTime(project) {
+  const updatedAt = Number(project?.updatedAt || 0);
+  const createdAt = Number(project?.createdAt || 0);
+  return Math.max(updatedAt, createdAt, 0);
+}
+
+function mergeProjectLists(localProjects, cloudProjects) {
+  const byId = new Map();
+  [...cloudProjects, ...localProjects].forEach((rawProject) => {
+    const project = normalizeProject(rawProject);
+    const previous = byId.get(project.id);
+    if (!previous || getProjectSortTime(project) >= getProjectSortTime(previous)) byId.set(project.id, project);
+  });
+  return [...byId.values()].sort((a, b) => getProjectSortTime(b) - getProjectSortTime(a));
+}
+
+async function fetchCloudProjects() {
+  const activeUser = getActiveFirebaseUser();
+  if (!firebaseReady || !firebaseDb || !activeUser) return [];
+  const snapshot = await firebaseDb.collection("users").doc(activeUser.uid).collection("projects").orderBy("updatedAt", "desc").get();
+  return snapshot.docs.map((doc) => normalizeProject({ ...doc.data(), id: doc.data().id || doc.id }));
+}
+
+async function syncCloudProjectsIntoGallery({ uploadLocal = true } = {}) {
   if (!isCloudMode()) return;
-  await firebaseDb.collection("users").doc(currentUser.uid).collection("projects").doc(projectId).delete();
+  const activeUser = getActiveFirebaseUser();
+  try {
+    setStatus("Synchronizuję projekty z chmurą...");
+    const localProjects = (await loadProjects()).map(normalizeProject);
+    const cloudProjects = await fetchCloudProjects();
+    const mergedProjects = mergeProjectLists(localProjects, cloudProjects);
+
+    projects = mergedProjects;
+    await persistProjects();
+
+    if (uploadLocal && mergedProjects.length > 0) {
+      for (const project of mergedProjects) await saveProjectToCloud(project);
+    }
+
+    const refreshedCloud = await fetchCloudProjects();
+    projects = mergeProjectLists(mergedProjects, refreshedCloud);
+    await persistProjects();
+    cloudSyncReady = true;
+    updateAuthUI();
+    renderGallery();
+    showView("gallery");
+    setStatus(`Chmura zsynchronizowana: ${projects.length} projektów na koncie ${activeUser?.email || "Google"}.`);
+  } catch (error) {
+    cloudSyncReady = false;
+    updateAuthUI();
+    console.error("Cloud sync error", error);
+    const code = error?.code ? ` (${error.code})` : "";
+    setStatus(`Nie udało się zsynchronizować chmury${code}. Zapis lokalny nadal działa.`);
+  }
 }
 
 async function loadCloudProjectsIntoGallery() {
-  if (!isCloudMode()) return;
-  try {
-    const snapshot = await firebaseDb.collection("users").doc(currentUser.uid).collection("projects").orderBy("updatedAt", "desc").get();
-    const cloudProjects = snapshot.docs.map((doc) => normalizeProject({ ...doc.data(), id: doc.data().id || doc.id }));
-
-    if (cloudProjects.length === 0 && projects.length > 0) {
-      const moveLocal = confirm("Nie masz jeszcze projektów w chmurze. Przenieść lokalne projekty na konto Google?");
-      if (moveLocal) {
-        for (const project of projects) {
-          await saveProjectToCloud(normalizeProject(project));
-        }
-        setStatus("Lokalne projekty przeniesione do chmury.");
-      }
-    }
-
-    const refreshed = await firebaseDb.collection("users").doc(currentUser.uid).collection("projects").orderBy("updatedAt", "desc").get();
-    projects = refreshed.docs.map((doc) => normalizeProject({ ...doc.data(), id: doc.data().id || doc.id }));
-    renderGallery();
-    showView("gallery");
-  } catch (error) {
-    console.error("Cloud load error", error);
-    setStatus("Nie udało się wczytać chmury. Pokazuję lokalną kopię.");
-  }
+  await syncCloudProjectsIntoGallery({ uploadLocal: true });
 }
 
 function loadLegacyProjects() {
