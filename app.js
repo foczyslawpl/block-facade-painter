@@ -13,7 +13,7 @@ const SKY_COLOR = "#8DBBFF";
 const MAX_SIZE = 100;
 const MAX_HISTORY = 60;
 const MAX_LAYERS = 6;
-const THUMBNAIL_VERSION = 2;
+const THUMBNAIL_VERSION = 3;
 const THUMBNAIL_WIDTH = 320;
 const THUMBNAIL_HEIGHT = 240;
 const THUMBNAIL_MAX_CELL_SCALE = 24;
@@ -760,7 +760,12 @@ function renderGallery() {
   emptyGalleryEl.classList.toggle("hidden", sortedProjects.length > 0);
 
   sortedProjects.forEach((project) => {
-    const normalized = normalizeProject(project);
+    const normalized = refreshProjectThumbnailIfNeeded(normalizeProject(project));
+    const storedProject = projects.find((entry) => entry.id === normalized.id);
+    if (storedProject && storedProject.thumbnailVersion !== THUMBNAIL_VERSION) {
+      storedProject.thumbnail = normalized.thumbnail;
+      storedProject.thumbnailVersion = THUMBNAIL_VERSION;
+    }
     const card = document.createElement("article");
     card.className = "project-card panel";
 
@@ -1881,6 +1886,14 @@ function getProjectThumbnailSrc(project) {
   return makeThumbnail(project);
 }
 
+function refreshProjectThumbnailIfNeeded(project) {
+  if (!project) return project;
+  if (project.thumbnail && project.thumbnailVersion === THUMBNAIL_VERSION) return project;
+  project.thumbnail = makeThumbnail(project);
+  project.thumbnailVersion = THUMBNAIL_VERSION;
+  return project;
+}
+
 function getLayerCellsBounds(layers, width, height) {
   let minX = width;
   let minY = height;
@@ -1960,16 +1973,18 @@ function makeThumbnail(project) {
   thumbCtx.fillRect(0, 0, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
 
   const bounds = getThumbnailContentBounds(normalized);
-  const cropW = bounds.maxX - bounds.minX + 1;
-  const cropH = bounds.maxY - bounds.minY + 1;
+  const cropW = Math.max(1, bounds.maxX - bounds.minX + 1);
+  const cropH = Math.max(1, bounds.maxY - bounds.minY + 1);
   const scale = Math.max(1, Math.min(
     THUMBNAIL_MAX_CELL_SCALE,
     Math.floor(Math.min(THUMBNAIL_WIDTH / cropW, THUMBNAIL_HEIGHT / cropH))
   ));
-  const drawW = cropW * scale;
-  const drawH = cropH * scale;
-  const offsetX = Math.floor((THUMBNAIL_WIDTH - drawW) / 2) - bounds.minX * scale;
-  const offsetY = Math.floor((THUMBNAIL_HEIGHT - drawH) / 2) - bounds.minY * scale;
+
+  const cropCanvas = document.createElement("canvas");
+  cropCanvas.width = cropW * scale;
+  cropCanvas.height = cropH * scale;
+  const cropCtx = cropCanvas.getContext("2d");
+  cropCtx.imageSmoothingEnabled = false;
 
   normalized.layers.forEach((layer) => {
     const darken = getLayerDarkenAlpha(layer, normalized);
@@ -1979,15 +1994,16 @@ function makeThumbnail(project) {
       for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
         const textureId = cells[row + x];
         if (!textureId) continue;
-        thumbCtx.save();
-        thumbCtx.translate(offsetX, offsetY);
-        drawTextureCell(textureId, x, y, thumbCtx, scale, darken, layer, normalized.width);
-        thumbCtx.restore();
+        drawTextureCell(textureId, x - bounds.minX, y - bounds.minY, cropCtx, scale, darken, layer, normalized.width);
       }
     }
   });
 
-  return thumbCanvas.toDataURL("image/webp", 0.78);
+  const offsetX = Math.floor((THUMBNAIL_WIDTH - cropCanvas.width) / 2);
+  const offsetY = Math.floor((THUMBNAIL_HEIGHT - cropCanvas.height) / 2);
+  thumbCtx.drawImage(cropCanvas, offsetX, offsetY);
+
+  return thumbCanvas.toDataURL("image/webp", 0.82);
 }
 
 function upsertCurrentProject() {
