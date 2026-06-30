@@ -77,6 +77,7 @@ let firebaseAuth = null;
 let firebaseDb = null;
 let currentUser = null;
 let cloudSyncReady = false;
+let lastCloudError = null;
 let currentProject = null;
 let currentTool = "brush";
 let showGrid = true;
@@ -859,6 +860,7 @@ function openEditor() {
   renderLayerList();
   setStatus("");
   lastTransformTarget = null;
+  updateSaveButtonLabel();
   showView("editor");
   fitCanvasToWindow();
 }
@@ -1931,7 +1933,6 @@ function setStatus(message) {
 async function saveCurrentProject() {
   if (!currentProject) return;
   saveBtn.disabled = true;
-  const previousText = saveBtn.textContent;
   saveBtn.textContent = "Zapisuję...";
 
   currentProject.updatedAt = Date.now();
@@ -1943,23 +1944,23 @@ async function saveCurrentProject() {
       await saveProjectToCloud(currentProject);
       await persistProjects();
       cloudSyncReady = true;
+      lastCloudError = null;
       updateAuthUI();
-      setStatus("Projekt zapisany w chmurze i lokalnej kopii.");
+      setStatus("Projekt zapisany w chmurze i lokalnej kopii. Powinien być widoczny na innych urządzeniach po odświeżeniu i logowaniu.");
       saveBtn.textContent = "Zapisano w chmurze";
     } catch (error) {
-      cloudSyncReady = false;
-      updateAuthUI();
       console.error("Cloud save error", error);
+      setCloudError(error);
       const localSaved = await persistProjects();
-      const code = error?.code ? ` (${error.code})` : "";
-      setStatus(localSaved ? `Chmura zwróciła błąd${code}, ale projekt zapisano lokalnie.` : `Błąd zapisu w chmurze${code} i lokalnie.`);
-      saveBtn.textContent = localSaved ? "Zapis lokalny" : "Błąd zapisu";
+      const details = describeFirebaseError(error);
+      setStatus(localSaved ? `Nie zapisano w chmurze (${details}). Zrobiono tylko lokalną kopię.` : `Błąd zapisu w chmurze i lokalnie (${details}).`);
+      saveBtn.textContent = localSaved ? "Błąd chmury" : "Błąd zapisu";
     }
 
     setTimeout(() => {
-      saveBtn.textContent = previousText;
       saveBtn.disabled = false;
-    }, 1100);
+      updateSaveButtonLabel();
+    }, 1600);
     return;
   }
 
@@ -1967,8 +1968,8 @@ async function saveCurrentProject() {
   setStatus(ok ? "Projekt zapisany lokalnie." : "Nie udało się zapisać projektu.");
   saveBtn.textContent = ok ? "Zapisano" : "Błąd zapisu";
   setTimeout(() => {
-    saveBtn.textContent = previousText;
     saveBtn.disabled = false;
+    updateSaveButtonLabel();
   }, 900);
 }
 
@@ -1980,17 +1981,44 @@ function isCloudMode() {
   return Boolean(firebaseReady && firebaseDb && getActiveFirebaseUser());
 }
 
+function getDefaultSaveButtonText() {
+  return isCloudMode() ? "Zapis w chmurze" : "Zapis lokalny";
+}
+
+function updateSaveButtonLabel() {
+  if (!saveBtn || saveBtn.disabled) return;
+  saveBtn.textContent = getDefaultSaveButtonText();
+}
+
+function describeFirebaseError(error) {
+  const code = error?.code || "unknown";
+  if (code === "permission-denied") return "permission-denied: Firestore Rules blokują zapis/odczyt";
+  if (code === "unavailable") return "unavailable: Firestore chwilowo niedostępny albo brak sieci";
+  if (code === "failed-precondition") return "failed-precondition: problem konfiguracji Firestore lub wielu kart";
+  if (code === "unauthenticated") return "unauthenticated: sesja Google nie została przekazana do Firestore";
+  return `${code}: ${error?.message || "błąd Firebase"}`;
+}
+
+function setCloudError(error) {
+  lastCloudError = error || null;
+  cloudSyncReady = false;
+  updateAuthUI();
+}
+
 function updateAuthUI(customMessage = "") {
   if (customMessage) {
     authStatus.textContent = customMessage;
     loginBtn.classList.remove("hidden");
     logoutBtn.classList.add("hidden");
+    updateSaveButtonLabel();
     return;
   }
   const activeUser = getActiveFirebaseUser();
   if (activeUser) {
     const name = activeUser.displayName || activeUser.email || "konto Google";
-    authStatus.textContent = cloudSyncReady ? `Chmura aktywna: ${name}` : `Logowanie: ${name}`;
+    if (cloudSyncReady) authStatus.textContent = `Chmura aktywna: ${name}`;
+    else if (lastCloudError) authStatus.textContent = `Google: ${name} · błąd chmury`;
+    else authStatus.textContent = `Google: ${name} · sprawdzam chmurę`;
     loginBtn.classList.add("hidden");
     logoutBtn.classList.remove("hidden");
   } else {
@@ -1998,6 +2026,7 @@ function updateAuthUI(customMessage = "") {
     loginBtn.classList.remove("hidden");
     logoutBtn.classList.add("hidden");
   }
+  updateSaveButtonLabel();
 }
 
 function initFirebaseCloud() {
@@ -2015,11 +2044,13 @@ function initFirebaseCloud() {
     firebaseAuth.onAuthStateChanged(async (user) => {
       currentUser = user;
       cloudSyncReady = false;
+      lastCloudError = null;
       updateAuthUI();
       if (user) await syncCloudProjectsIntoGallery({ uploadLocal: true });
       else {
         projects = await loadProjects();
         renderGallery();
+        updateSaveButtonLabel();
       }
     });
   } catch (error) {
@@ -2107,16 +2138,16 @@ async function syncCloudProjectsIntoGallery({ uploadLocal = true } = {}) {
     projects = mergeProjectLists(mergedProjects, refreshedCloud);
     await persistProjects();
     cloudSyncReady = true;
+    lastCloudError = null;
     updateAuthUI();
     renderGallery();
     showView("gallery");
     setStatus(`Chmura zsynchronizowana: ${projects.length} projektów na koncie ${activeUser?.email || "Google"}.`);
   } catch (error) {
-    cloudSyncReady = false;
-    updateAuthUI();
     console.error("Cloud sync error", error);
-    const code = error?.code ? ` (${error.code})` : "";
-    setStatus(`Nie udało się zsynchronizować chmury${code}. Zapis lokalny nadal działa.`);
+    setCloudError(error);
+    const details = describeFirebaseError(error);
+    setStatus(`Nie udało się zsynchronizować chmury (${details}). Kliknij „Zapis w chmurze”, aby sprawdzić zapis konkretnego projektu.`);
   }
 }
 
