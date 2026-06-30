@@ -1996,6 +1996,7 @@ function describeFirebaseError(error) {
   if (code === "unavailable") return "unavailable: Firestore chwilowo niedostępny albo brak sieci";
   if (code === "failed-precondition") return "failed-precondition: problem konfiguracji Firestore lub wielu kart";
   if (code === "unauthenticated") return "unauthenticated: sesja Google nie została przekazana do Firestore";
+  if (code === "invalid-argument") return "invalid-argument: Firestore odrzucił format danych projektu";
   return `${code}: ${error?.message || "błąd Firebase"}`;
 }
 
@@ -2039,6 +2040,11 @@ function initFirebaseCloud() {
     if (!firebase.apps.length) firebase.initializeApp(window.FIREBASE_CONFIG);
     firebaseAuth = firebase.auth();
     firebaseDb = firebase.firestore();
+    try {
+      firebaseDb.settings({ ignoreUndefinedProperties: true });
+    } catch (settingsError) {
+      console.warn("Firestore settings already locked", settingsError);
+    }
     firebaseReady = true;
 
     firebaseAuth.onAuthStateChanged(async (user) => {
@@ -2080,13 +2086,28 @@ async function signOutGoogle() {
   await firebaseAuth.signOut();
 }
 
+function stripUndefinedForFirestore(value) {
+  if (Array.isArray(value)) return value.map(stripUndefinedForFirestore);
+  if (value && typeof value === "object") {
+    const clean = {};
+    Object.entries(value).forEach(([key, entry]) => {
+      if (entry === undefined) return;
+      clean[key] = stripUndefinedForFirestore(entry);
+    });
+    return clean;
+  }
+  return value;
+}
+
 async function saveProjectToCloud(project) {
   const activeUser = getActiveFirebaseUser();
   if (!firebaseReady || !firebaseDb || !activeUser) throw new Error("Brak zalogowanego użytkownika.");
   const cleanProject = normalizeProject(cloneProject(project));
+  delete cleanProject.cells;
   cleanProject.ownerUid = activeUser.uid;
   cleanProject.cloudUpdatedAt = firebase.firestore.FieldValue.serverTimestamp();
-  await firebaseDb.collection("users").doc(activeUser.uid).collection("projects").doc(cleanProject.id).set(cleanProject, { merge: true });
+  const firestoreProject = stripUndefinedForFirestore(cleanProject);
+  await firebaseDb.collection("users").doc(activeUser.uid).collection("projects").doc(cleanProject.id).set(firestoreProject, { merge: true });
 }
 
 async function deleteProjectFromCloud(projectId) {
