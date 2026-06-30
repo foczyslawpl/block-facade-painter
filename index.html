@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Block Facade Painter</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>Block Facade Painter</h1>
+        <p>Edytor elewacji 2D z tekstur bloków 16×16.</p>
+      </div>
+      <div class="topbar-actions">
+        <div class="auth-box">
+          <span id="authStatus" class="auth-status">Tryb lokalny</span>
+          <button id="loginBtn" class="secondary" type="button">Zaloguj Google</button>
+          <button id="logoutBtn" class="secondary hidden" type="button">Wyloguj</button>
+        </div>
+        <button id="backToGalleryTop" class="secondary hidden" type="button">Galeria</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="galleryView" class="view">
+        <div class="panel hero-panel">
+          <div>
+            <h2>Twoje projekty</h2>
+            <p>Projekty możesz zapisywać lokalnie albo po zalogowaniu w chmurze.</p>
+          </div>
+          <button id="newProjectBtn" class="primary" type="button">Nowy projekt</button>
+        </div>
+
+        <div id="emptyGallery" class="empty-state hidden">
+          <strong>Brak zapisanych projektów.</strong>
+          <span>Utwórz pierwszą elewację i zapisz ją przyciskiem Save.</span>
+        </div>
+
+        <div id="projectGallery" class="gallery-grid"></div>
+      </section>
+
+      <section id="createView" class="view hidden">
+        <div class="panel form-panel">
+          <h2>Nowy projekt</h2>
+          <p>Wybierz format elewacji. Maksymalny rozmiar to 100×100 bloków.</p>
+
+          <form id="projectForm" class="project-form">
+            <label>
+              Nazwa projektu
+              <input id="projectName" type="text" maxlength="48" placeholder="np. Fasada ratusza" />
+            </label>
+
+            <div class="form-row">
+              <label>
+                Szerokość
+                <input id="projectWidth" type="number" min="1" max="100" value="32" required />
+              </label>
+              <label>
+                Wysokość
+                <input id="projectHeight" type="number" min="1" max="100" value="24" required />
+              </label>
+            </div>
+
+            <div class="create-options">
+              <h3>Opcje startowe</h3>
+
+              <label class="checkbox-row">
+                <input id="skyEnabled" type="checkbox" />
+                <span>Niebo (#8DBBFF)</span>
+              </label>
+
+              <label>
+                Teren startowy
+                <select id="terrainMode">
+                  <option value="none">Brak</option>
+                  <option value="flat">Płaska warstwa dirta + grass block na wierzchu</option>
+                  <option value="random">Losowe górki i doliny z dirta / stone + grass block na wierzchu</option>
+                </select>
+              </label>
+
+              <p class="form-hint">Teren zajmuje mniej więcej dolną 1/3 planszy. Przy terenie tworzy się osobna warstwa „Teren”, a na niej pusta warstwa do budowania.</p>
+            </div>
+
+            <div class="form-actions">
+              <button type="button" id="cancelCreateBtn" class="secondary">Anuluj</button>
+              <button type="submit" class="primary">Utwórz</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section id="editorView" class="view hidden">
+        <div class="editor-layout">
+          <aside class="toolbar panel">
+            <div class="project-meta">
+              <h2 id="editorProjectName">Projekt</h2>
+              <p id="editorProjectSize">0×0 bloków</p>
+            </div>
+
+            <div class="tool-group texture-panel">
+              <span class="tool-label">Bloki</span>
+              <input id="textureSearch" class="texture-search" type="search" placeholder="Szukaj bloku..." />
+              <select id="categorySelect" class="category-select"></select>
+              <div id="texturePalette" class="texture-palette"></div>
+              <p id="selectedTextureName" class="selected-texture">Wybrany blok: —</p>
+            </div>
+
+            <div class="tool-group">
+              <span class="tool-label">Narzędzia</span>
+              <button id="brushBtn" class="tool active" type="button">Pędzel</button>
+              <button id="eraserBtn" class="tool" type="button">Gumka</button>
+              <button id="eyedropperBtn" class="tool" type="button">Pipeta</button>
+            </div>
+
+            <div class="tool-group">
+              <span class="tool-label">Widok</span>
+              <button id="gridBtn" class="secondary" type="button">Ukryj siatkę</button>
+              <div class="zoom-row" aria-label="Sterowanie zoomem">
+                <button id="zoomOutBtn" class="secondary zoom-btn" type="button">−</button>
+                <span id="zoomValue" class="zoom-value">100%</span>
+                <button id="zoomInBtn" class="secondary zoom-btn" type="button">+</button>
+              </div>
+              <button id="zoomResetBtn" class="secondary" type="button">Dopasuj</button>
+            </div>
+
+            <div class="tool-group">
+              <span class="tool-label">Projekt</span>
+              <button id="saveBtn" class="primary" type="button">Save</button>
+              <button id="clearBtn" class="secondary" type="button">Wyczyść warstwę</button>
+              <button id="backToGalleryBtn" class="secondary" type="button">Galeria</button>
+            </div>
+
+            <p id="statusMessage" class="status-message"></p>
+          </aside>
+
+          <div class="canvas-panel panel">
+            <div class="canvas-scroll">
+              <canvas id="facadeCanvas"></canvas>
+            </div>
+            <p class="hint hidden">Pomoc przeniesiona do ustawień.</p>
+          </div>
+
+          <aside class="layers-sidebar panel">
+            <div class="layers-header">
+              <div>
+                <h2>Warstwy</h2>
+                <p>Przeciągaj, żeby zmieniać kolejność.</p>
+              </div>
+              <button id="addLayerBtn" class="secondary small-btn" type="button">+ Dodaj</button>
+            </div>
+            <label class="depth-toggle"><input id="depthShadingToggle" type="checkbox" /> <span>Przyciemniaj głębię</span></label>
+            <div id="layerList" class="layer-list"></div>
+            <p class="layer-hint">Maks. 6. Przyciemnianie można wyłączyć dla pojedynczej warstwy ikoną ◐.</p>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <button id="settingsBtn" class="settings-fab" type="button">⚙ Ustawienia</button>
+
+  <section id="settingsPanel" class="settings-panel hidden" aria-label="Ustawienia aplikacji">
+    <div class="settings-card panel">
+      <div class="settings-header">
+        <h2>Ustawienia</h2>
+        <button id="settingsCloseBtn" class="secondary close-settings" type="button">×</button>
+      </div>
+
+      <label class="theme-toggle">
+        <input id="darkModeToggle" type="checkbox" />
+        <span>Ciemny motyw</span>
+      </label>
+
+      <div class="shortcuts-box">
+        <h3>Skróty i sterowanie</h3>
+        <p><strong>Lewy przycisk myszy:</strong> malowanie wybranym blokiem na aktywnej warstwie.</p>
+        <p><strong>Prawy przycisk myszy:</strong> gumka tylko na aktywnej warstwie.</p>
+        <p><strong>Scroll myszy nad planszą:</strong> zoom w stronę kursora.</p>
+        <p><strong>Przytrzymanie scrolla:</strong> przesuwanie przybliżonej planszy.</p>
+        <p><strong>I:</strong> pipeta. Kliknij blok, aby go pobrać. Kliknięcie powietrza albo ponowne I anuluje pipetę.</p>
+        <p><strong>R:</strong> obróć ostatnio postawiony schodek / trapdoor o 90°.</p>
+        <p><strong>T:</strong> odbij ostatni schodek, przenieś półblok góra/dół albo obróć log o 180°.</p>
+        <p><strong>Ctrl+Z:</strong> cofnij ostatnią zmianę.</p>
+        <p><strong>Ctrl+Y / Ctrl+Shift+Z:</strong> ponów zmianę.</p>
+        <p><strong>Warstwy:</strong> przeciągaj na liście, aby zmieniać kolejność. Opcja „Przyciemniaj głębię” stopniuje warstwy nieterenowe.</p>
+      </div>
+    </div>
+  </section>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="textures.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
